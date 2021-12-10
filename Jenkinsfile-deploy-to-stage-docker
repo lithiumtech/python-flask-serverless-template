@@ -1,0 +1,85 @@
+#!groovy
+@Library('pipelinelibs') _
+
+utils = new lithiumtech.pipelines.utils()
+
+def bundleName = 'secure-forms'
+def branchName = env.BRANCH_NAME
+def VERSION_PATCH
+
+//////////////////////////////////////////////////////////////////////
+// Build and Deploy to STAGE
+//////////////////////////////////////////////////////////////////////
+
+pipeline {
+    agent { label 'us-west-2 && dandy && prod' }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    checkoutGit {}
+                    sh """
+                        git checkout ${branchName}
+                    """
+                    echo "Finished Checkout"
+                }
+            }
+        }
+
+        stage('Obtain version') {
+            steps {
+                script {
+                    def gitCmd = new lithiumtech.git.gitCommands()
+                    VERSION_PATCH = gitCmd.getGitLatestTag()
+                    currentBuild.description = "#${VERSION_PATCH}, branch ${branchName}"
+                    echo "Finished obtaining version: ${VERSION_PATCH}"
+                }
+            }
+        }
+
+        stage('Test and Build') {
+            agent {
+                docker {
+                    image 'spredfast/node-build:node.12.18.4'
+                    reuseNode true
+                }
+            }
+            environment {
+                HOME = '.'
+            }
+            steps {
+                script {
+                    sh '''
+                        npm ci
+                        npm run test
+                    '''
+                    echo "Finished Test"
+                }
+
+                script {
+                    sh """
+                        npm run build --filename='${bundleName}-${VERSION_PATCH}.bundle'
+                    """
+                    echo "Finished Build Step"
+                }
+            }
+        }
+
+        stage('Build and deploy bundle') {
+            steps {
+                script {
+                    sh '''
+                        npm install -g serverless
+                        npm install -g serverless-domain-manager
+                    '''
+                    echo "branch name = ${branchName}"
+                    sh "./deploy-secure-forms-ui.sh '${bundleName}' ${VERSION_PATCH} 'stage' 'us-west-2'"
+                    echo "Finished deploying secure forms ui bundle"
+                    sh "./deploy-serverless.sh 'stage' 'us-west-2'"
+                    echo "Finished serverless deploy pci handler"
+                }
+            }
+        }
+    }
+}

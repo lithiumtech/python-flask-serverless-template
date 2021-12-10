@@ -1,0 +1,104 @@
+#!groovy
+@Library('pipelinelibs') _
+
+utils = new lithiumtech.pipelines.utils()
+
+def bundleName = 'secure-forms'
+def branchName = env.BRANCH_NAME
+def VERSION_PATCH
+
+//////////////////////////////////////////////////////////////////////
+// Build and Deploy to QA
+//////////////////////////////////////////////////////////////////////
+
+pipeline {
+    agent { label 'java8 && dev' }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    checkoutGit {}
+                    sh """
+                        git checkout ${branchName}
+                    """
+                    echo "Finished Checkout"
+                }
+            }
+        }
+
+        stage('Obtain version') {
+            steps {
+                script {
+                    def gitCmd = new lithiumtech.git.gitCommands()
+                    VERSION_PATCH = gitCmd.getGitLatestTag()
+                    currentBuild.description = "#${VERSION_PATCH}, branch ${branchName}"
+                    echo "Finished obtaining version: ${VERSION_PATCH}"
+                }
+            }
+        }
+
+        stage('Test and Build') {
+            agent {
+                docker {
+                    image 'spredfast/node-build:node.12.18.4'
+                    reuseNode true
+                }
+            }
+            environment {
+                HOME = '.'
+            }
+            steps {
+                script {
+                    sh '''
+                        npm ci
+                        npm run test
+                    '''
+                    echo "Finished Test"
+                }
+
+                script {
+                    sh """
+                        npm run build --filename='${bundleName}-${VERSION_PATCH}.bundle'
+                    """
+                    echo "Finished Build Step"
+                }
+            }
+        }
+
+        stage('Build and deploy bundle') {
+            steps {
+                script {
+                    sh '''
+                        npm install -g serverless
+                        npm install -g serverless-domain-manager
+                    '''
+                    echo "branch name = ${branchName}"
+                    sh "./deploy-secure-forms-ui.sh '${bundleName}' ${VERSION_PATCH} 'qa' 'us-west-2'"
+                    echo "Finished deploying secure forms ui bundle"
+                    sh "./deploy-serverless.sh 'qa' 'us-west-2'"
+                    echo "Finished serverless deploy pci handler"
+                }
+            }
+        }
+
+        stage('Kick off smoke tests') {
+            steps {
+                script {
+                    try {
+                        build job: "/messaging-secureforms-qa-mineraloil-smoketest-trigger"
+                    } catch (err) {
+                        echo "FAILED to RUN smoke tests"
+                        echo err.getMessage()
+                        currentBuild.result = 'UNSTABLE'
+
+                        slackSend channel: '#messaging-alerts',
+                            color: "danger",
+                            message: "${env.JOB_NAME} - ${env.BUILD_DISPLAY_NAME} ${currentBuild.currentResult} after ${currentBuild.durationString} (<${env.BUILD_URL}|Open>) - SMOKE TESTS FAILURE"
+                    }
+                    echo "Finished running smoke tests"
+                }
+            }
+        }
+    }
+}

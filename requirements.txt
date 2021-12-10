@@ -1,0 +1,7 @@
+Jinja2==2.10.3
+boto3==1.9.234
+flask==1.1.1
+bleach>=3.1.0
+pycrypto==2.6.1
+werkzeug==1.0.1
+requests==2.20.1

@@ -1,0 +1,14 @@
+[
+{
+  "ParameterKey": "DomainSuffix",
+  "ParameterValue": "example"
+},
+{
+  "ParameterKey": "Region",
+  "ParameterValue": "us-west-2"
+},
+{
+  "ParameterKey": "Universe",
+  "ParameterValue": "qa"
+}
+]

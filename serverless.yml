@@ -1,0 +1,95 @@
+service: pci-handler
+
+frameworkVersion: ">=1.28.0 <2.0.0"
+
+plugins:
+  - serverless-pseudo-parameters
+  - serverless-python-requirements
+  - serverless-wsgi
+  - serverless-domain-manager
+  - serverless-prune-plugin
+
+custom:
+  customParams: ${file(./ops/serverless-config.js)}
+  wsgi:
+    app: handler/app.app
+    packRequirements: false
+  pythonRequirements:
+    dockerizePip: true
+    dockerSsh: true
+    slim: true
+  customDomain:
+    domainName: "${self:custom.customParams.webviewGatewayConfiguration.domainName}"
+    certificateArn: "${self:custom.customParams.webviewGatewayConfiguration.certArn}"
+    certificateName: "${self:custom.customParams.webviewGatewayConfiguration.certName}"
+    endpointType: "regional"
+    basePath: ''
+  prune:
+    automatic: true
+    number: 10
+
+provider:
+  name: aws
+  runtime: python3.7
+  stage: "${opt:stage, 'dev'}"
+  region: "${opt:region, 'us-west-2'}"
+  deploymentBucket:
+    name: "${self:custom.customParams.deploymentBucket}"
+  environment:
+    UNIVERSE: ${opt:stage}
+    REGION: ${self:provider.region}
+    VERSION: ${env:VERSION}
+    DYNAMO_DB_PREFIX: "${self:custom.customParams.dynamoDBPrefix}"
+  tags:
+    TeamID: pci
+    ServiceID: pci-handler
+    Universe: ${opt:stage}
+    Version: ${env:VERSION}
+  tracing:
+    apiGateway: true
+    lambda: true
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - s3:Get*
+        - s3:Put*
+      Resource:
+        - "arn:aws:s3:::${self:custom.customParams.deploymentBucket}"
+        - "arn:aws:s3:::${self:custom.customParams.deploymentBucket}/*"
+    - Effect: "Allow"
+      Action:
+        - "xray:PutTraceSegments"
+        - "xray:PutTelemetryRecords"
+      Resource:
+        - "*"
+    - Effect: "Allow"
+      Action:
+        - "lambda:InvokeFunction"
+      Resource: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:pci-handler-${self:provider.stage}-lambda"
+    - Effect: "Allow"
+      Action:
+        - "dynamodb:GetItem"
+        - "dynamodb:PutItem"
+      Resource: "arn:aws:dynamodb:#{AWS::Region}:#{AWS::AccountId}:table/${self:custom.customParams.dynamoDBPrefix}EncryptedAnswers"
+    - Effect: "Allow"
+      Action:
+        - "secretsmanager:GetSecretValue"
+      Resource: "arn:aws:secretsmanager:#{AWS::Region}:#{AWS::AccountId}:secret:/${self:provider.stage}/#{AWS::Region}/live/pci-handler/*"
+
+package:
+  exclude:
+    - node_modules/**
+    - package-lock.json
+    - requirements.txt
+    - webview-processor.iml
+  include:
+    - webview/templates/*
+    - webview/static/*
+
+functions:
+  webview:
+    handler: wsgi_handler.handler
+    timeout: 30
+    events:
+      - http: ANY /
+      - http: 'ANY {proxy+}'

@@ -1,0 +1,77 @@
+#!groovy
+@Library('pipelinelibs') _
+
+utils = new lithiumtech.pipelines.utils()
+
+pipeline {
+    agent none
+    stages {
+        stage('Setup and build') {
+            agent {
+                docker {
+                    label 'java8&&dev'
+                    image 'spredfast/node-build:node.12.18.4'
+                }
+            }
+            environment {
+                HOME = '.'
+            }
+
+            steps {
+                sh '''
+                    env
+                    npm -version
+                    node --version
+                    npm ci
+                    npm run verify
+                    npm run build
+                '''
+                echo "Finished Build Step"
+                echo "Publishing results"
+                cobertura autoUpdateHealth: false, autoUpdateStability: false, coberturaReportFile: '**/cobertura-coverage.xml', conditionalCoverageTargets: '70, 0, 0', failUnhealthy: false, failUnstable: false, lineCoverageTargets: '80, 0, 0', maxNumberOfBuilds: 0, methodCoverageTargets: '80, 0, 0', onlyStable: false, sourceEncoding: 'ASCII', zoomCoverageChart: false
+            }
+        }
+
+        stage('Publish to Sonarqube') {
+            agent { label 'java8&&dev' }
+            environment {
+                SCANNER_HOME = tool name: 'care-sonarqube', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+            }
+            steps {
+                withSonarQubeEnv('care-sonarqube') {
+                    sh "${SCANNER_HOME}/bin/sonar-scanner"
+                }
+            }
+        }
+
+        stage('Increment SNAPSHOT version') {
+            agent { label 'java8 && dev' }
+
+            steps {
+                script {
+                    VERSION_TAG = sh (
+                        script: 'npm version prerelease --preid=SNAPSHOT -m "DO NOT TRIGGER AUTO BUILD - version %s"',
+                        returnStdout: true
+                    ).trim()
+                    echo "Finished incrementing SNAPSHOT version: ${VERSION_TAG}"
+                }
+            }
+        }
+
+        stage('Update Jira tickets') {
+            agent { label 'java8 && dev' }
+
+            steps {
+                script {
+                    SHORT_VERSION = (VERSION_TAG.indexOf('-') != -1 ? VERSION_TAG.substring(0, VERSION_TAG.indexOf('-')) : VERSION_TAG)
+                    currentBuild.description = "#${SHORT_VERSION}"
+                    step([$class: 'hudson.plugins.jira.JiraIssueUpdater',
+                        issueSelector: [$class: 'hudson.plugins.jira.selector.DefaultIssueSelector'],
+                        scm: scm,
+                        labels: [ "brand_messenger_${SHORT_VERSION}"]])
+                }
+            }
+        }
+
+    }
+}

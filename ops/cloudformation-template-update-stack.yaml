@@ -1,0 +1,129 @@
+}{}{}!@$!@^#$@ herp derp syntax error so that you don't deploy without changing these values
+[]324-=-12359= this template is originally from the lithiumtech/pci-handler project and will need to be adapted FIRST!
+
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  HostedZoneId:
+    Description: "Hosted Zone Id add A record"
+    Type: String
+    Default: ZSI8KHOW5YRT6
+  CertificateArn:
+    Description: "ACM Certificate ARN For API Gateway"
+    Type: String
+    Default: 'arn:aws:acm:us-west-2:642760139656:certificate/d7c7dbf3-0c6b-45fc-8165-a60e0f6f10ed'
+  S3Prefix:
+   Type: String
+   Default: 'pci-static'
+  DefaultRootObject:
+    Description: 'The default path for the index document.'
+    Type: String
+    Default: 'index.html'
+  ErrorPagePath:
+    Description: 'The path of the error page for the website (e.g. /error.html). Must be a root-relative path.'
+    Type: String
+    Default: '/404.html'
+  DynamoDBTableName:
+    Type: String
+    Default: 'live-python-flask-serverless-template-example'
+  Region:
+    Type: String
+    # Not sure the _exact_ pattern of PCI deploys, we might only be deploying once to prod?
+    AllowedValues: ["us-west-2", "eu-west-1", "ap-southeast-2"]
+  Universe:
+    Type:  String
+    AllowedValues: ["qa", "stage", "prod"]
+  DomainSuffix:
+    Type: String
+    # Left AllowedValues blank b/c I'm not sure the totality of domains we need to deploy to tbh
+  DomainSuffixDefault:
+    Type: String
+    Default: .aws.lcloud.com
+  # PCI account doesn't follow the universe pattern the same way the non-pci accounts do
+  DomainOverride:
+    Type: String
+    Default: ""
+  S3bucketOverride:
+    Type: String
+    Default: ""
+  LogBucketPrefix:
+    Type: String
+    Description: "The prefix used for all S3 buckets."
+    Default: 's3-buckets-access-logs'
+
+Conditions:
+  UseOverrideDomain: !Not [!Equals [!Ref DomainOverride, ""] ]
+  UseOverrideS3bucket: !Not [!Equals [!Ref S3bucketOverride, ""] ]
+
+
+Resources:
+  # Create APIGW Custom domain
+  ApiGWCustomDomain:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      DomainName: !If [UseOverrideDomain, !Ref DomainOverride, !Sub '${DomainSuffix}-${Region}.${Universe}${DomainSuffixDefault}']
+      RegionalCertificateArn: !Ref CertificateArn
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      SecurityPolicy: TLS_1_2
+  # Create Route 53 A Record for APIGateway.
+  Route53RecordSetGroup:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !If [UseOverrideDomain, !Ref DomainOverride, !Sub '${DomainSuffix}-${Region}.${Universe}${DomainSuffixDefault}']
+          Type: A
+          AliasTarget:
+            HostedZoneId: !GetAtt ApiGWCustomDomain.RegionalHostedZoneId
+            DNSName: !GetAtt ApiGWCustomDomain.RegionalDomainName
+
+  # Create the bucket
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !If [UseOverrideS3bucket, !Ref S3bucketOverride,!Join ['-', [!Ref S3Prefix,!Ref Universe] ] ]
+      LoggingConfiguration: # Enable access logging. The LogBucket needs to be in the same region and AWS account as this bucket.
+        DestinationBucketName: !Sub "${LogBucketPrefix}-${Universe}-${Region}"
+        LogFilePrefix: !If [UseOverrideS3bucket, !Ref S3bucketOverride,!Join ['-', [!Ref S3Prefix,!Ref Universe] ] ] # Use the name of the bucket as the prefix.
+
+
+  #Create DynamoDB Table
+  exampleDynamoTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Join ['-', [!Ref Universe,!Ref DynamoDBTableName]]
+      AttributeDefinitions:
+        -
+          AttributeName: "hashKey"
+          AttributeType: "S"
+        -
+          AttributeName: "rangeKey"
+          AttributeType: "S"
+      KeySchema:
+        -
+          AttributeName: "hashKey"
+          KeyType: HASH
+        -
+          AttributeName: "rangeKey"
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      TimeToLiveSpecification:
+        AttributeName: ttlTSSeconds
+        Enabled: true
+
+Outputs:
+  BucketName:
+    Description: 'S3 Bucket Name'
+    Value: !Ref S3Bucket
+  exampleDynamoDBTable:
+    Description: Table Created using this template.
+    Value: !Ref exampleDynamoDBTable
+  APIGateway:
+     Description: "ApiGWCustomDomain RegionalDomainName"
+     Value: !GetAtt ApiGWCustomDomain.RegionalDomainName
+  S3BucketDomainName:
+     Description: "S3Bucket DomainName'"
+     Value: !GetAtt 'S3Bucket.DomainName'

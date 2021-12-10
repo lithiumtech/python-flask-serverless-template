@@ -1,0 +1,56 @@
+#!groovy
+@Library('pipelinelibs') _
+
+utils = new lithiumtech.pipelines.utils()
+
+//////////////////////////////////////////////////////////////////////
+// Run Tests and Build Secure Forms UI
+//////////////////////////////////////////////////////////////////////
+
+def bundleName = env.BRANCH_NAME
+
+echo "Building Branch: ${bundleName}"
+
+node('java8&&dev') {
+    def exists = fileExists "~/.ssh/known_hosts"
+
+    if (exists) {
+        sh '''
+            sudo chown -R ec2-user:ec2-user ~/.ssh/known_hosts
+            '''
+    }
+
+    knownHostGithub {}
+
+    stage('Checkout') {
+        checkoutGit {}
+    }
+
+    stage('Setup') {
+        sh '''
+            npm ci
+            '''
+        echo "Finished Test"
+    }
+
+    stage('Build Secure Forms UI') {
+        sh '''
+            npm run verify
+            npm run build
+            '''
+        echo "Finished Build Secure Forms UI Step"
+    }
+
+    stage('Build PCI Handler') {
+        sh '''
+            docker build -t khoros/pci-handler:pci-handler-test -f docker/Dockerfile .
+            docker run khoros/pci-handler:pci-handler-test flake8 --format=pylint --max-line-length=600 --exclude node_modules/ --ignore=E501,F401,W605
+            docker run --env AWS_DEFAULT_REGION=us-west-2 khoros/pci-handler:pci-handler-test python -m unittest discover
+            '''
+        echo "Finished Build PCI Handler Step"
+    }
+
+    stage('Run Code Coverage') {
+        cobertura autoUpdateHealth: false, autoUpdateStability: false, coberturaReportFile: '**/cobertura-coverage.xml', conditionalCoverageTargets: '70, 0, 0', failUnhealthy: false, failUnstable: false, lineCoverageTargets: '80, 0, 0', maxNumberOfBuilds: 0, methodCoverageTargets: '80, 0, 0', onlyStable: false, sourceEncoding: 'ASCII', zoomCoverageChart: false
+    }
+}

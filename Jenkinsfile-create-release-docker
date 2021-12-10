@@ -1,0 +1,101 @@
+#!groovy
+@Library('pipelinelibs') _
+
+//////////////////////////////////////////////////////////////////////
+// Create Release (only run it on master)
+//////////////////////////////////////////////////////////////////////
+
+def LATEST_TAG
+
+pipeline {
+    agent { label 'java8 && dev' }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    def gitCmd = new lithiumtech.git.gitCommands()
+                    // now checkout from scm based on the config provided
+                    checkout scm
+                    gitBranch = gitCmd.getGitBranch()
+                    gitCommit = gitCmd.getGitCommit()
+                    LATEST_TAG = gitCmd.getGitLatestTag()
+                    echo """
+                        GIT_BRANCH: [${gitBranch}]
+                        GIT_COMMIT: [${gitCommit}]
+                        LATEST_TAG: [${LATEST_TAG}]
+                    """
+
+                    //abort if it's not a version branch
+                    if (!gitBranch.equals('master')) {
+                        echo "Aborting, not on master branch! Branch name = ${gitBranch}"
+                        currentBuild.result = 'ABORTED'
+                        error('This should be run only on master branch')
+                    }
+                }
+            }
+        }
+
+        stage('Test & Build') {
+            agent {
+                docker {
+                    image 'spredfast/node-build:node.12.18.4'
+                    reuseNode true
+                }
+            }
+            environment {
+                HOME = '.'
+            }
+
+            steps {
+                script {
+                    sh '''
+                        npm ci
+                        npm run test
+                        npm run build
+                    '''
+                    echo "Finished Test & Build step"
+                }
+            }
+        }
+
+        stage('Create and push version branch') {
+            steps {
+                script {
+                    SHORT_VERSION = (LATEST_TAG.indexOf('-') != -1 ? LATEST_TAG.substring(0, LATEST_TAG.indexOf('-')) : LATEST_TAG)
+                    VERSION_BRANCH = 'version-branch-' + (SHORT_VERSION)
+                    currentBuild.description = "#${SHORT_VERSION}"
+                    echo " About to create Version Branch = ${VERSION_BRANCH}"
+                    sh """
+                        git branch ${VERSION_BRANCH}
+                        git push --set-upstream origin ${VERSION_BRANCH}
+                    """
+                    echo "Finished creating and pushing version branch: ${VERSION_BRANCH}"
+                }
+            }
+        }
+
+        stage('Increment minor version') {
+            steps {
+                script {
+                    NEW_MINOR_VERSION = sh (
+                            script: 'npm version preminor --preid=SNAPSHOT -m "DO NOT TRIGGER AUTO BUILD - version %s"',
+                            returnStdout: true
+                    ).trim()
+                    echo "Finished incrementing minor version to : ${NEW_MINOR_VERSION}"
+                }
+            }
+        }
+
+        stage('Push GIT') {
+            steps {
+                script {
+                    sh '''
+                        git push --set-upstream origin master --tags
+                        '''
+                    echo "Finished pushing GIT"
+                }
+            }
+        }
+    }
+}
